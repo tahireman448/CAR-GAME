@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Highway Racer - Rival Competition Edition</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #05070f;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            user-select: none;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui {
+            position: absolute;
+            top: 25px;
+            left: 25px;
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
+            pointer-events: none;
+        }
+        .hud-card {
+            background: rgba(5, 10, 25, 0.85);
+            padding: 15px 25px;
+            border-radius: 10px;
+            border-left: 5px solid #ff0055;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        #speedo {
+            font-size: 54px;
+            font-weight: bold;
+            color: #ff0055;
+            text-shadow: 0 0 15px rgba(255, 0, 85, 0.6);
+        }
+        #score-box {
+            font-size: 20px;
+            color: #00ffcc;
+            margin-top: 5px;
+        }
+        #position-box {
+            font-size: 22px;
+            color: #ffff00;
+            font-weight: bold;
+            margin-top: 5px;
+            text-shadow: 0 0 10px rgba(255, 255, 0, 0.5);
+        }
+        #controls-hint {
+            position: absolute;
+            bottom: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #ffffff;
+            font-size: 13px;
+            letter-spacing: 2px;
+            pointer-events: none;
+            text-align: center;
+            background: rgba(5, 10, 25, 0.9);
+            padding: 12px 30px;
+            border-radius: 30px;
+            box-shadow: 0 5px 25px rgba(0,0,0,0.6);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        #crash-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: radial-gradient(circle, rgba(255,0,50,0.5) 0%, rgba(0,0,0,0.9) 100%);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 60px;
+            font-weight: 900;
+            letter-spacing: 5px;
+            text-shadow: 0 0 30px rgba(255,0,0,0.8);
+            pointer-events: none;
+            text-align: center;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="ui">
+        <div class="hud-card">
+            <span id="speedo">0</span> <span style="font-size:20px; color:#aaa;">KM/H</span>
+            <div id="score-box">SCORE: <span id="score">0</span></div>
+            <div id="position-box">POS: <span id="position">1st</span></div>
+        </div>
+    </div>
+
+    <div id="crash-overlay">RIVAL CRASHED YOU!<br><span style="font-size:25px; color:#aaa;">THEY ARE OVERTAKING!</span></div>
+    <div id="controls-hint">CLICK TO START MUSIC • ACCELERATE [W] • RIVALS ARE COMING!</div>
+    <div id="canvas-container"></div>
+
+    <script>
+        let scene, camera, renderer;
+        let playerCar, highway, mountains = [], trafficCars = [], rivals = [];
+        let speed = 0;
+        let particleSystem;
+        
+        // Physics Configurations
+        const maxSpeed = 10.0;        
+        const trafficSpeed = 0.35;    
+        const acceleration = 0.07;
+        const deceleration = 0.04;
+        const laneMoveSpeed = 0.38; 
+        const maxBoundX = 11.5;     
+
+        let playerPhysics = { x: 0, vx: 0, rotation: 0 };
+        let keys = { ArrowLeft: false, ArrowRight: false, KeyA: false, KeyD: false, ArrowUp: false, KeyW: false };
+        let score = 0;
+        let crashTimer = 0;
+        let timeClock = 0;
+
+        // Audio Engine
+        let audioCtx = null;
+        let synthInterval = null;
+
+        function initAudio() {
+            if (audioCtx) return; 
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            let tempo = 130;
+            let noteLength = 60 / tempo / 2;
+            let counter = 0;
+            const bassSequence = [36, 36, 43, 43, 39, 39, 41, 41];
+            
+            synthInterval = setInterval(() => {
+                if (!audioCtx || audioCtx.state === 'suspended') return;
+                let time = audioCtx.currentTime;
+                
+                let bassOsc = audioCtx.createOscillator();
+                let bassGain = audioCtx.createGain();
+                bassOsc.type = 'sawtooth';
+                bassOsc.frequency.setValueAtTime(midiToFreq(bassSequence[counter % bassSequence.length]), time);
+                
+                bassGain.gain.setValueAtTime(0.12, time);
+                bassGain.gain.exponentialRampToValueAtTime(0.01, time + noteLength - 0.02);
+                
+                let filter = audioCtx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(500 + (speed * 80), time);
+                
+                bassOsc.connect(filter);
+                filter.connect(bassGain);
+                bassGain.connect(audioCtx.destination);
+                bassOsc.start(time);
+                bassOsc.stop(time + noteLength);
+
+                if (counter % 2 === 1) playHiHat(time);
+                counter++;
+            }, noteLength * 1000);
+        }
+
+        function midiToFreq(note) { return Math.pow(2, (note - 69) / 12) * 440; }
+        function playHiHat(time) {
+            let bufferSize = audioCtx.sampleRate * 0.03;
+            let buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            let data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+            let noise = audioCtx.createBufferSource();
+            noise.buffer = buffer;
+            let filter = audioCtx.createBiquadFilter();
+            filter.type = 'highpass'; filter.frequency.setValueAtTime(8000, time);
+            let gain = audioCtx.createGain();
+            gain.gain.setValueAtTime(0.02, time); gain.gain.exponentialRampToValueAtTime(0.001, time + 0.03);
+            noise.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            noise.start(time);
+        }
+
+        function playCrashSound() {
+            if (!audioCtx) return;
+            let time = audioCtx.currentTime;
+            let osc = audioCtx.createOscillator();
+            let gain = audioCtx.createGain();
+            osc.type = 'sawtooth'; osc.frequency.setValueAtTime(180, time);
+            osc.frequency.linearRampToValueAtTime(20, time + 0.5);
+            let filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass'; filter.frequency.setValueAtTime(400, time);
+            gain.gain.setValueAtTime(0.5, time); gain.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+            osc.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(time); osc.stop(time + 0.5);
+        }
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x05060c); 
+            scene.fog = new THREE.FogExp2(0x05060c, 0.007); 
+
+            camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            container.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.3); scene.add(ambientLight);
+            const moonLight = new THREE.DirectionalLight(0x5577aa, 1.5); moonLight.position.set(-50, 80, 40); scene.add(moonLight);
+            const neonGlow = new THREE.DirectionalLight(0xff00aa, 0.5); neonGlow.position.set(50, 20, -100); scene.add(neonGlow);
+
+            createHighway();
+            createPlayerCar();
+            createMountains();
+            createTraffic();
+            createRivals();
+            createExhaustParticles();
+
+            const triggerAudio = () => { initAudio(); if(audioCtx) audioCtx.resume(); };
+            window.addEventListener('keydown', (e) => { triggerAudio(); if(e.code in keys) keys[e.code] = true; });
+            window.addEventListener('keyup', (e) => { if(e.code in keys) keys[e.code] = false; });
+            window.addEventListener('click', triggerAudio);
+            window.addEventListener('resize', onWindowResize);
+
+            animate();
+        }
+
+        function createHighway() {
+            const highwayGeo = new THREE.PlaneGeometry(26, 4000);
+            const highwayMat = new THREE.MeshStandardMaterial({ color: 0x0c0c0e, roughness: 0.7, metalness: 0.1 });
+            highway = new THREE.Mesh(highwayGeo, highwayMat);
+            highway.rotation.x = -Math.PI / 2; highway.position.z = 1500;
+            scene.add(highway);
+
+            const railGeo = new THREE.BoxGeometry(0.3, 0.7, 4000);
+            const railMat = new THREE.MeshStandardMaterial({ color: 0x442255, metalness: 0.8, roughness: 0.2 });
+            const leftRail = new THREE.Mesh(railGeo, railMat); leftRail.position.set(-13, 0.35, 1500);
+            const rightRail = leftRail.clone(); rightRail.position.x = 13;
+            scene.add(leftRail, rightRail);
+
+            // Glowing neon borders
+            const neonGeo = new THREE.BoxGeometry(0.06, 0.06, 4000);
+            const neonMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
+            const leftNeon = new THREE.Mesh(neonGeo, neonMat); leftNeon.position.set(-12.8, 0.7, 1500);
+            const rightNeon = leftNeon.clone(); rightNeon.position.x = 12.8;
+            scene.add(leftNeon, rightNeon);
+
+            // Center lines
+            for(let i = -1; i <= 1; i++) {
+                if(i === 0) continue;
+                const lineGeo = new THREE.PlaneGeometry(0.15, 4000);
+                const lineMat = new THREE.MeshStandardMaterial({ color: 0x334466, roughness: 0.5 });
+                const line = new THREE.Mesh(lineGeo, lineMat);
+                line.rotation.x = -Math.PI / 2; line.position.set(i * 4.3, 0.015, 1500);
+                scene.add(line);
+            }
+        }
+
+        function createPlayerCar() {
+            playerCar = createCarMesh(0xff0044); 
+            scene.add(playerCar);
+        }
+
+        function createTraffic() {
+            const colors = [0x555555, 0x111111, 0xffffff, 0x2266ff];
+            const lanes = [-8.5, -4.3, 4.3, 8.5]; 
+            for(let i = 0; i < 6; i++) {
+                let tCar = createCarMesh(colors[i % colors.length]);
+                tCar.position.x = lanes[i % lanes.length];
+                tCar.position.z = 300 + (i * 200); 
+                scene.add(tCar);
+                trafficCars.push({ mesh: tCar, speed: trafficSpeed + (Math.random() * 0.1) });
+            }
+        }
+
+        function createRivals() {
+            // Humare 2 bade competitors (Tez aur aggressive)
+            const rivalColors = [0xffff00, 0x9900ff]; // Yellow aur Purple Rivals
+            const lanes = [-4.3, 4.3];
+
+            for(let i = 0; i < 2; i++) {
+                let rCar = createCarMesh(rivalColors[i]);
+                // Rivals piche se race shuru karenge aur player ko overtake karne ki koshish karenge
+                rCar.position.set(lanes[i], 0, -80 - (i * 40)); 
+                scene.add(rCar);
+                rivals.push({
+                    mesh: rCar,
+                    speed: maxSpeed * 0.95 + (i * 0.4), // Inki speed player ki max speed ke barabar/thodi zyada hogi
+                    state: 'racing'
+                });
+            }
+        }
+
+        function createCarMesh(colorHex) {
+            const carGroup = new THREE.Group();
+            const bodyGeo = new THREE.BoxGeometry(2.1, 0.55, 4.4);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.1, metalness: 0.7 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat); body.position.y = 0.45;
+            carGroup.add(body);
+
+            const cabinGeo = new THREE.BoxGeometry(1.6, 0.48, 2.2);
+            const cabinMat = new THREE.MeshStandardMaterial({ color: 0x05050a, roughness: 0.0, metalness: 0.9 });
+            const cabin = new THREE.Mesh(cabinGeo, cabinMat); cabin.position.set(0, 0.9, -0.1);
+            carGroup.add(cabin);
+
+            const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.45, 16);
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x09090b, roughness: 0.8 });
+            const wPos = [[-1.15, 0.42, 1.35], [1.15, 0.42, 1.35], [-1.15, 0.42, -1.35], [1.15, 0.42, -1.35]];
+            wPos.forEach(p => {
+                const wheelMesh = new THREE.Mesh(wheelGeo, wheelMat);
+                wheelMesh.rotation.z = Math.PI/2; wheelMesh.position.set(p[0], p[1], p[2]);
+                carGroup.add(wheelMesh);
+            });
+            return carGroup;
+        }
+
+        function createMountains() {
+            const mGeo = new THREE.ConeGeometry(50, 100, 4);
+            const mMat = new THREE.MeshStandardMaterial({ color: 0x0a0c16, roughness: 0.9, flatShading: true });
+            for (let i = 0; i < 30; i++) {
+                const mountain = new THREE.Mesh(mGeo, mMat);
+                const side = Math.random() > 0.5 ? 1 : -1;
+                mountain.position.set((Math.random() * 120 + 70) * side, 45, Math.random() * 2000);
+                scene.add(mountain); mountains.push(mountain);
+            }
+        }
+
+        function createExhaustParticles() {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(30 * 3);
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const mat = new THREE.PointsMaterial({ color: 0x00ffcc, size: 0.3, transparent: true, opacity: 0.5 });
+            particleSystem = new THREE.Points(geom, mat); scene.add(particleSystem);
+        }
+
+        function updateParticles() {
+            const positions = particleSystem.geometry.attributes.position.array;
+            for(let i = positions.length - 3; i >= 3; i -= 3) {
+                positions[i] = positions[i-3]; positions[i+1] = positions[i-2]; positions[i+2] = positions[i-1] - (speed * 0.5);
+            }
+            positions[0] = playerCar.position.x + (Math.random() * 0.2 - 0.1); positions[1] = 0.35; positions[2] = playerCar.position.z - 2.2;
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // --- ENGINE REACTION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (crashTimer > 0) {
+                crashTimer--;
+                if(crashTimer === 0) document.getElementById('crash-overlay').style.display = 'none';
+            }
+
+            // Player Speed Controls
+            if ((keys.ArrowUp || keys.KeyW) && crashTimer === 0) {
+                speed += acceleration; if (speed > maxSpeed) speed = maxSpeed;
+            } else {
+                speed -= deceleration; if (speed < 0) speed = 0;
+            }
+
+            // Steering
+            if ((keys.ArrowLeft || keys.KeyA) && crashTimer === 0) {
+                playerPhysics.x -= laneMoveSpeed; playerPhysics.rotation = THREE.MathUtils.lerp(playerPhysics.rotation, 0.14, 0.25); 
+            } else if ((keys.ArrowRight || keys.KeyD) && crashTimer === 0) {
+                playerPhysics.x += laneMoveSpeed; playerPhysics.rotation = THREE.MathUtils.lerp(playerPhysics.rotation, -0.14, 0.25);
+            } else {
+                playerPhysics.rotation = THREE.MathUtils.lerp(playerPhysics.rotation, 0, 0.2); 
+            }
+
+            if (playerPhysics.x > maxBoundX) playerPhysics.x = maxBoundX;
+            if (playerPhysics.x < -maxBoundX) playerPhysics.x = -maxBoundX;
+
+            playerCar.position.x = playerPhysics.x;
+            playerCar.rotation.y = playerPhysics.rotation;
+            playerCar.rotation.z = (playerPhysics.rotation * -0.4); 
+
+            updateParticles();
+
+            // Environment move
+            mountains.forEach(m => {
+                m.position.z -= speed * 12;
+                if (m.position.z < -150) m.position.z = 2200;
+            });
+
+            // Normal Traffic Logic
+            const lanes = [-8.5, -4.3, 4.3, 8.5];
+            trafficCars.forEach(t => {
+                t.mesh.position.z -= (speed * 12) - (t.speed * 8);
+                if (t.mesh.position.z < -50) {
+                    t.mesh.position.z = 1200 + Math.random() * 400; 
+                    t.mesh.position.x = lanes[Math.floor(Math.random() * lanes.length)];
+                    if(speed > 1) score += 50;
+                }
+                // Crash with normal traffic
+                if (Math.abs(playerCar.position.x - t.mesh.position.x) < 2.0 && Math.abs(playerCar.position.z - t.mesh.position.z) < 4.2) {
+                    speed = -2.0; crashTimer = 30; playCrashSound();
+                    score = Math.max(0, score - 50);
+                }
+            });
+
+            // --- RIVALS LOGIC (COMPETITION) ---
+            let playersBehindCount = 0; // Tracking Position
+
+            rivals.forEach(r => {
+                // Rivals moves relative to player's current speed
+                // Unki speed physics aisi hai ki agar player slow hoga toh wo tezi se aage nikal jayenge
+                let relativeMovement = (speed * 12) - (r.speed);
+                r.mesh.position.z -= relativeMovement;
+
+                // Infinite loop configuration for rivals to keep the race endless
+                if (r.mesh.position.z > 1000) {
+                    r.mesh.position.z = -200 - Math.random()*200; // Dobara piche chale jayenge attack karne
+                    r.mesh.position.x = lanes[Math.floor(Math.random() * lanes.length)];
+                } else if (r.mesh.position.z < -300) {
+                    r.mesh.position.z = 800; // Agar bohot piche reh gaye toh aage respawn honge
+                }
+
+                // Check position tracking
+                if (r.mesh.position.z > playerCar.position.z) {
+                    playersBehindCount++; // Agar rival aage hai toh player ki position piche hogi
+                }
+
+                // AGGRESSIVE OVERTAKE & CRASH PHYSICS: 
+                // Agar rival piche se aa raha hai (Z close hai) aur lane same hai, toh woh Player ko CRUSH karega!
+                let xDist = Math.abs(playerCar.position.x - r.mesh.position.x);
+                let zDist = playerCar.position.z - r.mesh.position.z; // Distance from behind
+
+                if (xDist < 2.0 && zDist > -2.0 && zDist < 4.0) {
+                    // Booom! Rival hits player from behind
+                    speed = 1.0; // Player crash ho kar bilkul slow ho jayega
+                    crashTimer = 50; 
+                    r.mesh.position.z += 15; // Rival jhatke se aage nikal jayega push karke!
+                    playCrashSound();
+                    document.getElementById('crash-overlay').style.display = 'flex';
+                    score = Math.max(0, score - 100);
+                }
+            });
+
+            // Calculate Position Text
+            let currentPos = "1st";
+            if (playersBehindCount === 1) currentPos = "2nd";
+            if (playersBehindCount === 2) currentPos = "3rd";
+            document.getElementById('position').innerText = currentPos;
+
+            // Camera Engine Tracker
+            camera.position.x = THREE.MathUtils.lerp(camera.position.x, playerCar.position.x, 0.08);
+            camera.position.y = 3.8 + (speed * 0.12); 
+            camera.position.z = -14.0 - (speed * 2.0); 
+
+            if (crashTimer > 0) {
+                camera.position.x += (Math.random() - 0.5) * 0.7;
+                camera.position.y += (Math.random() - 0.5) * 0.7;
+            }
+            camera.lookAt(playerCar.position.x * 0.6, 1.3, playerCar.position.z + 35);
+
+            // UI HUD Update
+            document.getElementById('speedo').innerText = Math.max(0, Math.round(speed * 48));
+            document.getElementById('score').innerText = score;
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
