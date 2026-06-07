@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alpha City Horizon - Infinite Stream Engine</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<style>
+body{margin:0;overflow:hidden;font-family:'Segoe UI', sans-serif;background:#0d0614}
+
+/* MINI HUD - स्लिक बॉटम डिज़ाइन */
+#hud {
+position: absolute;
+bottom: 25px; left: 50%;
+transform: translateX(-50%);
+background: linear-gradient(180deg, rgba(20,10,35,0.85) 0%, rgba(5,5,15,0.95) 100%);
+color: #fff;
+padding: 12px 30px;
+border-radius: 30px;
+border: 1px solid rgba(0, 255, 204, 0.3);
+box-shadow: 0 4px 20px rgba(0,0,0,0.5), inset 0 0 10px rgba(0,255,204,0.1);
+display: flex;
+gap: 35px;
+align-items: center;
+backdrop-filter: blur(8px);
+z-index: 10;
+}
+
+#hud div {
+font-weight: 900; 
+font-size: 1.1rem; 
+letter-spacing: 1px; 
+text-transform: uppercase;
+white-space: nowrap;
+}
+
+#position { color: #ffcc00; }
+#distance { color: #bf00ff; }
+#speed { color: #00ffcc; text-shadow: 0 0 8px rgba(0,255,204,0.4); }
+#nitro-ui { color: #00aaff; }
+#damage { color: #ff3366; }
+
+#start-prompt {
+position: absolute;
+top: 0; left: 0; width: 100%; height: 100%;
+color: white; background: radial-gradient(circle, rgba(35,15,45,0.98) 0%, rgba(5,5,15,1) 100%);
+display: flex; flex-direction: column;
+justify-content: center; align-items: center;
+cursor: pointer; z-index: 100;
+}
+
+#start-btn {
+background: linear-gradient(90deg, #ff0055, #00ffcc); color: white; padding: 15px 40px;
+font-size: 1.5rem; font-weight: 900; border: none; letter-spacing: 2px;
+border-radius: 30px; cursor: pointer; box-shadow: 0 0 30px #ff0055;
+transition: transform 0.2s;
+}
+#start-btn:hover { transform: scale(1.05); }
+</style>
+</head>
+
+<body>
+
+<div id="start-prompt" onclick="startGame()">
+  <h1 style="font-size: 4rem; margin-bottom: 5px; color: #fff; text-shadow: 0 0 25px #ff0055; font-style: italic;">INFINITE HORIZON</h1>
+  <p style="font-size: 1.1rem; color: #00ffcc; margin-bottom: 35px; letter-spacing: 4px;">LOOPING TRACK ENGINE ACTIVE</p>
+  <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 20px;">[W] Gas | [A/D] Steer | [SPACE] Nitro | Track Will Never End!</p>
+  <button id="start-btn">ENGAGE SIMULATION</button>
+</div>
+
+<div id="hud">
+  <div id="position">POS: --/46</div>
+  <div id="distance">DIST: 100000M</div>
+  <div id="speed">SPD: 0 KM/H</div>
+  <div id="nitro-ui">NITRO: 100%</div>
+  <div id="damage">DMG: 0%</div>
+</div>
+
+<script>
+
+let scene=new THREE.Scene();
+scene.fog=new THREE.FogExp2(0x2a1035, 0.005); 
+
+let camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,1000);
+let renderer=new THREE.WebGLRenderer({antialias:true, powerPreference: "high-performance"});
+renderer.setSize(innerWidth,innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+/* SUNSET SKY & BACKGROUND SUN */
+let skyGeo = new THREE.SphereGeometry(500, 32, 15);
+let canvas = document.createElement('canvas');
+canvas.width = 2; canvas.height = 128;
+let ctx = canvas.getContext('2d');
+let grad = ctx.createLinearGradient(0, 0, 0, 128);
+grad.addColorStop(0, '#150526'); 
+grad.addColorStop(0.5, '#4a154b'); 
+grad.addColorStop(0.8, '#ff4500'); 
+grad.addColorStop(1, '#ff8c00'); 
+ctx.fillStyle = grad; ctx.fillRect(0, 0, 2, 128);
+let skyTex = new THREE.CanvasTexture(canvas);
+let skyMat = new THREE.MeshBasicMaterial({map: skyTex, side: THREE.BackSide});
+let sky = new THREE.Mesh(skyGeo, skyMat);
+scene.add(sky);
+
+let sunGeo = new THREE.CircleGeometry(40, 32);
+let sunMat = new THREE.MeshBasicMaterial({color: 0xffaa00, fog: false});
+let sun = new THREE.Mesh(sunGeo, sunMat);
+scene.add(sun);
+
+/* LIGHTING */
+let ambient = new THREE.AmbientLight(0x3a1d52, 0.6);
+scene.add(ambient);
+let sunLight = new THREE.DirectionalLight(0xff5500, 1.8);
+sunLight.position.set(0, 15, 300);
+scene.add(sunLight);
+let neonRimLight = new THREE.DirectionalLight(0x00ffcc, 0.8);
+neonRimLight.position.set(-10, 20, -50);
+scene.add(neonRimLight);
+
+/* INFINITE LOOPING ROAD ENGINE (सड़क कभी खत्म नहीं होगी) */
+const roadGeo = new THREE.PlaneGeometry(26, 3000);
+const roadMat = new THREE.MeshStandardMaterial({color: 0x08050e, roughness: 0.3, metalness: 0.7});
+const road = new THREE.Mesh(roadGeo, roadMat);
+road.rotation.x = -Math.PI / 2;
+road.position.z = 0; // Center position
+scene.add(road);
+
+// ट्रैक की साइड वाली नियॉन लाइट्स (Re-cycling System)
+let trackLines = [];
+for(let i=0; i<150; i++) {
+    let leftLine = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 8), new THREE.MeshBasicMaterial({color: 0x00ffcc}));
+    let rightLine = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 8), new THREE.MeshBasicMaterial({color: 0xff0055}));
+    
+    // लाइनों को शुरू में ही लंबी दूरी तक बिछा दिया
+    leftLine.position.set(-13, 0.05, (i * 25) - 500);
+    rightLine.position.set(13, 0.05, (i * 25) - 500);
+    
+    scene.add(leftLine, rightLine);
+    trackLines.push(leftLine, rightLine);
+}
+
+/* LOOPING BUILDINGS SYSTEM (शहर की इमारतें जो प्लेयर के साथ जनरेट होती रहेंगी) */
+let buildings = [];
+let totalBuildings = 60;
+for(let i=0; i<totalBuildings; i++) {
+    let h = 45 + Math.random() * 85;
+    let w = 20 + Math.random() * 25;
+    let d = 20 + Math.random() * 25;
+    let bMat = new THREE.MeshStandardMaterial({color: 0x150727, roughness: 0.6, metalness: 0.8});
+    let b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bMat);
+    
+    let side = Math.random() > 0.5 ? 1 : -1;
+    // इमारतों को पूरी स्क्रीन की रेंज में ज़ी-एक्सिस पर बिखेरा
+    b.position.set((65 + Math.random() * 90) * side, h/2 - 10, (i * 25) - 400);
+    scene.add(b);
+    buildings.push(b);
+}
+
+/* CAR BUILDER DESIGN */
+function buildArcadeCar(bodyColor, isPlayer = false) {
+    let carGroup = new THREE.Group();
+    let bodyMat = new THREE.MeshStandardMaterial({color: bodyColor, roughness: 0.1, metalness: 0.9, clearcoat: 1.0});
+    
+    let base = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.4, 4.7), bodyMat);
+    base.position.y = 0.3;
+    carGroup.add(base);
+
+    let cabinMat = new THREE.MeshStandardMaterial({color: 0x07050f, roughness: 0.0, metalness: 1.0});
+    let cabin = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.45, 2.3), cabinMat);
+    cabin.position.set(0, 0.65, -0.2);
+    cabin.rotation.x = -0.1;
+    carGroup.add(cabin);
+
+    let hood = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.25, 1.4), bodyMat);
+    hood.position.set(0, 0.35, -1.8);
+    hood.rotation.x = 0.12;
+    carGroup.add(hood);
+
+    let wingMain = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.08, 0.6), bodyMat);
+    wingMain.position.set(0, 0.8, 2.1);
+    carGroup.add(wingMain);
+
+    let lightMat = new THREE.MeshBasicMaterial({color: isPlayer ? 0x00ffff : 0xff3300});
+    let headlightL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.2), lightMat);
+    headlightL.position.set(-0.8, 0.35, -2.4);
+    let headlightR = headlightL.clone(); headlightR.position.x = 0.8;
+    carGroup.add(headlightL, headlightR);
+
+    let tailLightMat = new THREE.MeshBasicMaterial({color: isPlayer ? 0xff0055 : 0xffaa00});
+    let taillightL = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.1), tailLightMat);
+    taillightL.position.set(-0.8, 0.45, 2.31);
+    let taillightR = taillightL.clone(); taillightR.position.x = 0.8;
+    carGroup.add(taillightL, taillightR);
+
+    let wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.4, 16);
+    let wheelMat = new THREE.MeshStandardMaterial({color: 0x111115, roughness: 0.7});
+    wheelGeo.rotateZ(Math.PI / 2);
+    let wFL = new THREE.Mesh(wheelGeo, wheelMat); wFL.position.set(-1.15, 0.38, -1.4);
+    let wFR = new THREE.Mesh(wheelGeo, wheelMat); wFR.position.set(1.15, 0.38, -1.4);
+    let wRL = new THREE.Mesh(wheelGeo, wheelMat); wRL.position.set(-1.15, 0.38, 1.4);
+    let wRR = new THREE.Mesh(wheelGeo, wheelMat); wRR.position.set(1.15, 0.38, 1.4);
+    carGroup.add(wFL, wFR, wRL, wRR);
+
+    return carGroup;
+}
+
+/* INITIALIZE PLAYER */
+let player = buildArcadeCar(0xff0055, true);
+scene.add(player);
+
+/* TRAFFIC SYSTEM (45 CARS) */
+let cars=[];
+let lanes=[-9.0, -4.5, 0, 4.5, 9.0];
+let totalRivals = 45; 
+
+for(let i=0; i<totalRivals; i++){
+    let hue = (i * (360 / totalRivals));
+    let aiColor = new THREE.Color(`hsl(${hue}, 95%, 45%)`);
+    let c = buildArcadeCar(aiColor, false);
+    
+    let spawnZ = 60 + (i * 30) + (Math.random() * 20);
+    c.position.set(lanes[Math.floor(Math.random()*lanes.length)], 0, spawnZ);
+    
+    c.userData = {
+        speed: 1.0 + Math.random() * 1.6,
+        laneTarget: c.position.x,
+        raceProgress: spawnZ,
+        yVelocity: 0, 
+        isSpun: false
+    };
+    scene.add(c);
+    cars.push(c);
+}
+
+/* INPUTS & ENGINE VARIABLES */
+let keys={};
+let speed=0;
+let damage=0;
+let nitro=100;
+let nitroActive=false;
+let playerProgress=0; 
+let targetDistance = 100000; // 100 किलोमीटर ट्रैक रेंज
+let gameActive = false;
+
+document.addEventListener("keydown",e=> {
+    keys[e.code]=true;
+    if(e.code === 'Space') nitroActive = true;
+});
+document.addEventListener("keyup",e=> {
+    keys[e.code]=false;
+    if(e.code === 'Space') nitroActive = false;
+});
+
+/* LIVE AUDIO SYNTH ENGINE */
+let audioCtx, engineOsc, nitroOsc, engineGain;
+
+function startGame() {
+    document.getElementById('start-prompt').style.display = 'none';
+    gameActive = true;
+
+    try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        engineOsc = audioCtx.createOscillator();
+        engineGain = audioCtx.createGain();
+        engineOsc.type = 'sawtooth';
+        engineOsc.frequency.setValueAtTime(55, audioCtx.currentTime);
+        
+        let filter = audioCtx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(280, audioCtx.currentTime);
+        
+        engineOsc.connect(filter);
+        filter.connect(engineGain);
+        engineGain.connect(audioCtx.destination);
+        engineGain.gain.setValueAtTime(0.18, audioCtx.currentTime);
+        engineOsc.start();
+
+        nitroOsc = audioCtx.createOscillator();
+        let nitroGain = audioCtx.createGain();
+        nitroOsc.type = 'triangle';
+        nitroOsc.frequency.setValueAtTime(180, audioCtx.currentTime);
+        nitroGain.gain.setValueAtTime(0, audioCtx.currentTime);
+        nitroOsc.connect(nitroGain);
+        nitroGain.connect(audioCtx.destination);
+        nitroOsc.start();
+        
+        engineOsc.nitroVolumeNode = nitroGain;
+    } catch(e) {}
+}
+
+function playCrashSound() {
+    if(!audioCtx) return;
+    try {
+        let structuralCrash = audioCtx.createOscillator();
+        let impactGain = audioCtx.createGain();
+        structuralCrash.type = 'triangle';
+        structuralCrash.frequency.setValueAtTime(160, audioCtx.currentTime);
+        structuralCrash.frequency.exponentialRampToValueAtTime(12, audioCtx.currentTime + 0.45);
+        impactGain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+        impactGain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.45);
+        structuralCrash.connect(impactGain);
+        impactGain.connect(audioCtx.destination);
+        structuralCrash.start(); structuralCrash.stop(audioCtx.currentTime + 0.45);
+    } catch(e){}
+}
+
+function shake(intensity){
+    camera.position.x+=(Math.random()-0.5)*intensity;
+    camera.position.y+=(Math.random()-0.5)*intensity;
+}
+
+function processCollision(c) {
+    speed *= 0.15; 
+    damage = Math.min(100, damage + 20); 
+    shake(1.2);
+    playCrashSound();
+
+    c.userData.speed = 0.2; 
+    c.userData.yVelocity = 0.4; 
+    c.userData.isSpun = true;
+}
+
+/* RUNTIME GAME ENGINE SYSTEM */
+function update(){
+if(!gameActive) return;
+
+/* MOTOR THROTTLE GEARS */
+let topSpeedLimit = 4.2;
+if(nitroActive && nitro > 0) {
+    speed += 0.08;
+    nitro = Math.max(0, nitro - 0.7);
+    topSpeedLimit = 5.8;
+    if(engineOsc && engineOsc.nitroVolumeNode) {
+        engineOsc.nitroVolumeNode.gain.setTargetAtTime(0.25, audioCtx.currentTime, 0.05);
+        nitroOsc.frequency.setTargetAtTime(320 + (speed*30), audioCtx.currentTime, 0.1);
+    }
+} else {
+    if(keys.KeyW) speed += 0.05;
+    else speed -= 0.04;
+    if(nitro < 100) nitro += 0.1;
+    if(engineOsc && engineOsc.nitroVolumeNode) {
+        engineOsc.nitroVolumeNode.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.1);
+    }
+}
+speed = Math.max(0, Math.min(speed, topSpeedLimit));
+
+if(engineOsc) {
+    let internalPitch = 45 + (speed * 48); 
+    engineOsc.frequency.setTargetAtTime(internalPitch, audioCtx.currentTime, 0.08);
+}
+
+/* HANDLING SYSTEM */
+let currentSteerAngle = 0;
+if(keys.KeyA){
+    player.position.x -= 0.24 + speed*0.02;
+    currentSteerAngle = 0.18;
+} else if(keys.KeyD){
+    player.position.x += 0.24 + speed*0.02;
+    currentSteerAngle = -0.18;
+}
+player.rotation.z += (currentSteerAngle - player.rotation.z) * 0.15; 
+player.rotation.y = player.rotation.z * 0.4; 
+player.position.x = Math.max(-11.5, Math.min(11.5, player.position.x));
+
+playerProgress += speed * 2.2;
+let remainingDist = Math.max(0, Math.round(targetDistance - playerProgress));
+
+/* CRITICAL FIX: CONTINUOUS TRACK & ENVIRONMENT RECYCLING (ट्रैक और शहर कभी खत्म नहीं होंगे) */
+// सड़क के टुकड़े को हमेशा प्लेयर की गाड़ी के नीचे लॉक रखना
+road.position.z = player.position.z + 500;
+
+// नियॉन लाइन्स को कैमरा के पीछे जाने पर आगे रीसायकल करना
+trackLines.forEach(tl => {
+    if (tl.position.z < camera.position.z - 30) {
+        tl.position.z += 150 * 25; // सीधे उठाकर बहुत आगे फेंक देना
+    }
+});
+
+// इमारतों को पीछे छूटने पर आगे रीसायकल करना (Infinite Loop City)
+buildings.forEach(b => {
+    if (b.position.z < camera.position.z - 50) {
+        b.position.z += totalBuildings * 25;
+        // रीसायकल होते समय उनकी ऊँचाई और साइड थोड़ी बदल देना ताकि वैरायटी लगे
+        b.position.x = (65 + Math.random() * 90) * (Math.random() > 0.5 ? 1 : -1);
+    }
+});
+
+/* COMPETITOR ENGINES & COLLISION FRAME */
+let playerRank = totalRivals + 1;
+
+cars.forEach((c)=>{
+    c.userData.raceProgress += c.userData.speed * 2.2;
+    
+    if(!c.userData.isSpun && Math.random() < 0.009){
+        c.userData.laneTarget = lanes[Math.floor(Math.random()*lanes.length)];
+    }
+    
+    c.position.x += (c.userData.laneTarget - c.position.x) * 0.05;
+    
+    // गाड़ियों की रिलेटिव पोजीशन प्लेयर के हिसाब से सेट होगी
+    c.position.z = c.userData.raceProgress - playerProgress;
+
+    // क्रैश जंप स्पिन मैकेनिक्स
+    if(c.userData.isSpun) {
+        c.position.y += c.userData.yVelocity;
+        c.userData.yVelocity -= 0.02; 
+        c.rotation.y += 0.2; 
+        c.rotation.x += 0.1;
+        if(c.position.y <= 0) {
+            c.position.y = 0;
+            c.userData.yVelocity = 0;
+            c.rotation.x = 0;
+            c.rotation.y = 0;
+            c.userData.isSpun = false;
+        }
+    } else {
+        let aiTurningSpeed = (c.userData.laneTarget - c.position.x) * 0.05;
+        c.rotation.z = -aiTurningSpeed * 0.5;
+    }
+
+    if(c.userData.raceProgress > playerProgress) {
+        playerRank--;
+    }
+
+    /* COLLISION BOX DETECTION */
+    if(Math.abs(c.position.z) < 4.4 && Math.abs(c.position.x - player.position.x) < 2.2 && c.position.y < 1.0){
+        processCollision(c);
+        c.userData.raceProgress += 50; // टक्कर के बाद कार आगे शिफ्ट होगी
+    }
+
+    /* INFINITE TRAFFIC LOOP CYCLING (पीछे छूटने वाली कारें आगे आ जाएँगी) */
+    if(c.position.z < -60){
+        // गाड़ी पीछे रह गई है, इसे सीधे आगे 500M दूर स्पॉन कर दो
+        c.userData.raceProgress = playerProgress + 300 + Math.random() * 300;
+        c.position.x = lanes[Math.floor(Math.random()*lanes.length)];
+        c.userData.laneTarget = c.position.x;
+        c.position.y = 0;
+        c.userData.isSpun = false;
+        c.rotation.set(0,0,0);
+        c.userData.speed = 1.0 + Math.random() * 1.7;
+    }
+});
+
+/* CHASE CAMERA CORE */
+camera.position.x += (player.position.x - camera.position.x) * 0.08;
+camera.position.y = 4.2 + (speed * 0.18); 
+camera.position.z = player.position.z - 11.5 - (speed * 0.5); 
+camera.lookAt(new THREE.Vector3(player.position.x * 0.7, player.position.y + 0.8, player.position.z + 20));
+
+sky.position.copy(camera.position);
+sun.position.set(camera.position.x, camera.position.y + 15, camera.position.z + 450);
+
+if(damage > 0 && Math.random() > 0.4) shake(0.015);
+
+/* CRITICAL DAMAGE CONDITION */
+if(damage >= 100) {
+    gameActive = false;
+    alert(`💥 VEHICLE DESTROYED! 💥\nYour engine burnt out!\nDistance covered: ${Math.round(playerProgress)}M`);
+    location.reload();
+}
+
+/* MARATHON WIN SYSTEM */
+if (remainingDist <= 0) {
+    gameActive = false;
+    alert(`🏆 ULTRA MARATHON SUCCESS! 🏆\nYou completed the 100KM run!\nFINAL RANK: ${playerRank} / ${totalRivals + 1}`);
+    location.reload();
+}
+
+/* FEED TELEMETRY PANELS */
+document.getElementById("speed").innerText = "SPD: " + Math.floor(speed * 62) + " KM/H";
+document.getElementById("damage").innerText = "DMG: " + damage + "%";
+document.getElementById("position").innerText = `POS: ${playerRank}/${totalRivals + 1}`;
+document.getElementById("distance").innerText = `DIST: ${remainingDist}M`;
+document.getElementById("nitro-ui").innerText = `NITRO: ${Math.floor(nitro)}%`;
+}
+
+function animate(){
+    requestAnimationFrame(animate);
+    update();
+    renderer.render(scene,camera);
+}
+
+animate();
+
+window.addEventListener("resize",()=>{
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+});
+
+</script>
+
+</body>
+</html>
